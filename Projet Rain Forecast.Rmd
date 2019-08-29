@@ -1,0 +1,192 @@
+---
+title: "R MarkDown - Rain Forecast Project"
+author: "Alexandre Marette"
+date: "31 aout 2019"
+output: 
+  html_document:
+    theme: united
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Etape 0 - Nettoyage de l'environnement
+
+```{r}
+rm(list=ls())
+list=ls()
+```
+
+# Etape 1 - Import du fichier de training
+
+
+```{r}
+train_meteo = read.csv("meteo.train.csv", na.strings = "")
+```
+
+
+# Etape 2 - Nettoyage et selection des donnees
+
+```{r}
+
+#Installation du package questionr
+#install.packages("questionr")
+library(questionr)
+
+View(train_meteo)
+#summary(train_meteo)
+names(train_meteo)
+attach(train_meteo)
+
+#Verification pas de ligne vide
+freq(train_meteo$pluie.demain)
+
+#levels(train_meteo$pluie.demain)
+#Calcul du nombre de lignes et de colonnes dans le fichier
+nb_lignes = nrow(train_meteo)
+nb_colonnes = ncol
+
+```
+## Suppression des colonnes heures et minutes (ne contiennent que des valeurs nulles)
+
+```{r}
+tr_meteo = cbind(train_meteo[,1:4],train_meteo[,7:ncol(train_meteo)])
+attach(tr_meteo)
+```
+
+## Etude des correlations entre les variables explicatives
+
+```{r include=FALSE}
+#install.packages("Hmisc")
+library(Hmisc)
+library(corrplot)
+```
+```{r}
+matrice_cor = cor(tr_meteo,method = c("pearson"))
+plot.new()
+corrplot(matrice_cor, type="upper", order="original",
+         tl.col="black", tl.srt=45,tl.cex = 0.45)
+
+```
+
+En premiere approche, on remarque que les variables de vitesse du vent sont correlees positivement entre elles. Les co-variables de temperatures egalement, ainsi que certaines donnees relatives a l humidite et a la pression.
+
+### Essayons d'etudier ces correlations plus en detail :
+
+a- D'abord la vitesse et la direction du vent :
+
+
+```{r}
+#selection des variables :
+tr_wind = cbind(tr_meteo[,16:22],tr_meteo[,37:44])
+# calcul de la matrice de correlation
+cor_wind=cor(tr_wind,method = c("pearson"))
+# Graph de la matrice de corrélation
+plot.new()
+corrplot(cor_wind, type="upper", order="original",
+         tl.col="black", tl.srt=45,tl.cex = 0.6)
+```
+
+- les variables concernant le vent les moins correlees aux autres sont les variables de direction moyenne
+=> Nous allons les conserver.
+- Les variables de vitesse du vent sont toutes correlees entre elles.
+=> Nous allons tester en ne prenant que les valeurs moyennes.
+
+b- Analyse des correlations sur les temperatures, l'humidite et la pression
+
+```{r}
+tr_tHp = cbind(tr_meteo[,5:5],tr_meteo[,23:24],tr_meteo[,6:6],tr_meteo[,25:26],tr_meteo[,7:7],tr_meteo[,27:28])
+cor_tHp = cor(tr_tHp,method = c("pearson"))
+plot.new()
+corrplot(cor_tHp, type="upper", order="original",
+         tl.col="black", tl.srt=45,tl.cex = 0.6)
+```
+
+Cette analyse conforte les conclusions precedentes.
+Nous allons tester en prenant les variables moyennes.
+
+## Construction du dataset a partir des resultats precedents :
+
+- Nous allons eliminer les variables temporelles qui ne nous paraissent pas apporter d'information particuliere dans le cadre de ce projet, meme si on peut se poser la question d'une tendance et de la probabilite de pluie si la veille il a plu.
+Mais cela semble sortir du cadre de ce cours.
+- Nous conservons les variables de direction moyennes du vent et de vitesse moyennes du vent.
+- Nous conservons les variables moyennes d'humidite, de temperatures et de pression.
+
+
+```{r}
+t_meteo = cbind(tr_meteo[,1],tr_meteo[,5:22],tr_meteo[,29:36],tr_meteo[,45])
+names(t_meteo)[1]="X"
+names(t_meteo)[28]="pluie.demain"
+
+```
+
+
+# Etape 3 - Preparation de la Validation Croisee : creation du jeu de donnee d'entrainement et du jeu de test  
+
+On cree un vecteurs de booleens, tires aleatoirement :
+- les valeurs TRUE correspondent aux individus de la base d'entrainement
+- les valeurs FALSE correspondent aux individus de la base de test
+
+```{r}
+train = sample(c(T, F), nrow(t_meteo), replace = T, prob = c(.75, .25))
+length(train)
+nrow(t_meteo)
+names(t_meteo)
+```
+
+# Etape 4 - Construction du modele et choix du modele 
+
+## Echauffement : une premiere regression de test avec l'ensemble des variables
+
+### Premiere regression logit binaire sur l'ensemble des variables explicatives
+
+```{r}
+reg <- glm(pluie.demain ~ ., 
+           data = t_meteo[train,], family = binomial(logit))
+summary(reg)
+```
+
+D'apres les p-values, les covariables significatives sont les suivantes :
+
+- Temperature.daily.mean..2.m.above.gnd.       *
+- Mean.Sea.Level.Pressure.daily.mean..MSL.     ***
+- Sunshine.Duration.daily.sum..sfc.            *
+- Shortwave.Radiation.daily.sum..sfc.          **
+- Wind.Direction.daily.mean..900.mb.           ***
+- Medium.Cloud.Cover.daily.max..mid.cld.lay.   ***
+- Low.Cloud.Cover.daily.min..low.cld.lay.      *
+
+
+```{r}
+#Calcul des VIF entre les covariables  :
+library(faraway)
+#install.packages("fmsb")
+vif(reg)
+```
+
+Les variables sont tres correlees entre elles, nous avons donc un probleme de multicolinearite dans le modele reg.
+
+Calcul de la déviance du model reg,la sortie indique :
+
+- Null deviance: 1297.5  on 935   degrees of freedom
+- Residual deviance:  1017.0  on 908  degrees of freedom
+
+```{r}
+# Le test par rapport au modèle sans covariable donne
+pchisq(1297.5 - 1017.0, 935 - 908, lower = F)
+```
+
+=> p-valeur tres faible : on rejette le modele sans covariable
+
+```{r}
+# Le test par rapport au modèle saturé donne
+pchisq(1297.5, 908, lower = F)
+```
+=> p-valeur est faible : notre modele ne suffit pas a expliquer toutes les variations. Il est mal ajuste.
+
+
+
+
