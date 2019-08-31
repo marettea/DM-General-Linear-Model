@@ -1,0 +1,692 @@
+---
+title: "R MarkDown - Rain Forecast Project"
+author: "Alexandre Marette"
+date: "31 aout 2019"
+output: 
+  html_document:
+    theme: united
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Etape 0 - Nettoyage de l'environnement
+
+```{r}
+rm(list=ls())
+list=ls()
+```
+
+# Etape 1 - Import du fichier de training
+
+
+```{r}
+train_meteo = read.csv("meteo.train.csv", na.strings = "")
+```
+
+
+# Etape 2 - Nettoyage et selection des donnees
+
+```{r}
+
+#Installation du package questionr
+#install.packages("questionr")
+library(questionr)
+
+View(train_meteo)
+#summary(train_meteo)
+names(train_meteo)
+attach(train_meteo)
+
+#Verification pas de ligne vide
+freq(train_meteo$pluie.demain)
+
+#levels(train_meteo$pluie.demain)
+#Calcul du nombre de lignes et de colonnes dans le fichier
+nb_lignes = nrow(train_meteo)
+nb_colonnes = ncol
+
+```
+## Suppression des colonnes heures et minutes (ne contiennent que des valeurs nulles)
+
+```{r}
+tr_meteo = cbind(train_meteo[,1:4],train_meteo[,7:ncol(train_meteo)])
+attach(tr_meteo)
+```
+
+## Etude des correlations entre les variables explicatives
+
+```{r include=FALSE}
+#install.packages("Hmisc")
+library(Hmisc)
+library(corrplot)
+```
+```{r}
+matrice_cor = cor(tr_meteo,method = c("pearson"))
+plot.new()
+corrplot(matrice_cor, type="upper", order="original",
+         tl.col="black", tl.srt=45,tl.cex = 0.45)
+
+```
+
+En premiere approche, on remarque que les variables de vitesse du vent sont correlees positivement entre elles. Les co-variables de temperatures egalement, ainsi que certaines donnees relatives a l humidite et a la pression.
+
+### Essayons d'etudier ces correlations plus en detail :
+
+a- D'abord la vitesse et la direction du vent :
+
+
+```{r}
+#selection des variables :
+tr_wind = cbind(tr_meteo[,16:22],tr_meteo[,37:44])
+# calcul de la matrice de correlation
+cor_wind=cor(tr_wind,method = c("pearson"))
+# Graph de la matrice de correlation
+plot.new()
+corrplot(cor_wind, type="upper", order="original",
+         tl.col="black", tl.srt=45,tl.cex = 0.6)
+```
+
+- les variables concernant le vent les moins correlees aux autres sont les variables de direction moyenne
+=> Nous allons les conserver.
+- Les variables de vitesse du vent sont toutes correlees entre elles.
+=> Nous allons tester en ne prenant que les valeurs moyennes.
+
+b- Analyse des correlations sur les temperatures, l'humidite et la pression
+
+```{r}
+tr_tHp = cbind(tr_meteo[,5:5],tr_meteo[,23:24],tr_meteo[,6:6],tr_meteo[,25:26],tr_meteo[,7:7],tr_meteo[,27:28])
+cor_tHp = cor(tr_tHp,method = c("pearson"))
+plot.new()
+corrplot(cor_tHp, type="upper", order="original",
+         tl.col="black", tl.srt=45,tl.cex = 0.6)
+```
+
+Cette analyse conforte les conclusions precedentes.
+Nous allons tester en prenant les variables moyennes des temperatures, humidite et pression.
+
+## Construction du dataset a partir des resultats precedents :
+
+- Nous allons eliminer les variables temporelles qui ne nous paraissent pas apporter d'information particuliere dans le cadre de ce projet, meme si on peut se poser la question d'une tendance et de la probabilite de pluie si la veille il a plu.
+Mais cela semble sortir du cadre de ce cours.
+- Nous conservons les variables de direction moyennes du vent et de vitesse moyennes du vent.
+- Nous conservons les variables moyennes d'humidite, de temperatures et de pression.
+
+
+```{r}
+t_meteo = cbind(tr_meteo[,1],tr_meteo[,5:22],tr_meteo[,29:36],tr_meteo[,45])
+names(t_meteo)[1]="X"
+names(t_meteo)[28]="pluie.demain"
+
+```
+
+
+# Etape 3 - Preparation de la Validation Croisee : creation du jeu de donnee d'entrainement et du jeu de test  
+
+On cree un vecteurs de booleens, tires aleatoirement :
+- les valeurs TRUE correspondent aux individus de la base d'entrainement
+- les valeurs FALSE correspondent aux individus de la base de test
+
+```{r}
+train = sample(c(T, F), nrow(t_meteo), replace = T, prob = c(.75, .25))
+length(train)
+nrow(t_meteo)
+names(t_meteo)
+```
+
+# Etape 4 - Construction du modele et choix du modele 
+
+## Echauffement 1 : regression de test Logit
+
+### Premiere regression logit binaire sur l'ensemble des variables explicatives
+
+```{r cache=TRUE}
+reg_log = glm(pluie.demain ~ ., 
+           data = t_meteo[train,], family = binomial(logit))
+summary(reg_log)
+```
+
+D'apres les p-values, les covariables significatives sont les suivantes :
+
+- Temperature.daily.mean..2.m.above.gnd.       *
+- Mean.Sea.Level.Pressure.daily.mean..MSL.     ***
+- Shortwave.Radiation.daily.sum..sfc.          **
+- Wind.Direction.daily.mean..900.mb.           ***
+- Total.Cloud.Cover.daily.min..sfc.            *
+- Medium.Cloud.Cover.daily.max..mid.cld.lay.   *
+- Low.Cloud.Cover.daily.min..low.cld.lay.      *
+
+
+```{r}
+#Calcul des VIF entre les covariables  :
+library(faraway)
+#install.packages("fmsb")
+vif(reg_log)
+```
+
+Les variables sont tres correlees entre elles, nous avons donc un probleme de multicolinearite dans le modele reg.
+
+### Deuxieme regression logit binaire sur les variables explicatives les plus significatives
+
+```{r cache=TRUE}
+reg1_log = glm(pluie.demain ~ Temperature.daily.mean..2.m.above.gnd. + Mean.Sea.Level.Pressure.daily.mean..MSL. + Shortwave.Radiation.daily.sum..sfc.+ Wind.Direction.daily.mean..900.mb. + Total.Cloud.Cover.daily.min..sfc. + Medium.Cloud.Cover.daily.max..mid.cld.lay. + Low.Cloud.Cover.daily.min..low.cld.lay., data = t_meteo[train,], family = binomial(logit))
+summary(reg1_log)
+```
+
+Calul des VIF
+
+```{r}
+vif(reg1_log)
+```
+
+Bien que beaucoup plus faibles que precedemment les VIF sont encore eleves (> 5, voir > 10 pour certains)
+
+Calcul de la deviance du model reg1_log,la sortie indique :
+
+- Null deviance: 1267.0  on 913   degrees of freedom
+- Residual deviance:  1067.8  on 906  degrees of freedom
+
+```{r}
+# Le test par rapport au modèle sans covariable donne
+
+pchisq(with(reg1_log, null.deviance - deviance), with(reg1_log, df.null - df.residual), lower = F)
+```
+
+=> p-valeur tres faible : on rejette le modele sans covariable
+
+```{r}
+# Le test par rapport au modèle sature donne
+pchisq(with(reg1_log, deviance), with(reg1_log, df.residual), lower = F)
+```
+=> p-valeur est faible : notre modele ne suffit pas a expliquer toutes les variations. Il est mal ajuste. Il est trop parcimonieux, il manque des variables explicatives.
+
+
+## Echauffement 2 : regression de test Probit
+
+### Premiere regression probit binaire sur l'ensemble des variables explicatives
+
+```{r cache=TRUE}
+reg_prob = glm(pluie.demain ~ ., 
+           data = t_meteo[train,], family = binomial(link = "probit"))
+summary(reg_prob)
+```
+
+D'apres les p-values, les covariables significatives sont les suivantes :
+
+- Temperature.daily.mean..2.m.above.gnd.       *
+- Mean.Sea.Level.Pressure.daily.mean..MSL.     ***
+- Shortwave.Radiation.daily.sum..sfc.          **
+- Wind.Direction.daily.mean..900.mb.           ***
+- Total.Cloud.Cover.daily.min..sfc.            *
+- Medium.Cloud.Cover.daily.max..mid.cld.lay.   *
+- Low.Cloud.Cover.daily.min..low.cld.lay.      *
+
+Ce sont les memes que pour la regression logit.
+
+### Deuxieme regression probit binaire sur les variables explicatives les plus significatives
+
+```{r cache=TRUE}
+reg1_prob = glm(pluie.demain ~ Temperature.daily.mean..2.m.above.gnd. + Mean.Sea.Level.Pressure.daily.mean..MSL. + Shortwave.Radiation.daily.sum..sfc.+ Wind.Direction.daily.mean..900.mb. + Total.Cloud.Cover.daily.min..sfc. + Medium.Cloud.Cover.daily.max..mid.cld.lay. + Low.Cloud.Cover.daily.min..low.cld.lay., 
+           data = t_meteo[train,], family = binomial(link = "probit"))
+summary(reg1_prob)
+```
+
+Calul des VIF
+
+```{r}
+vif(reg1_prob)
+```
+
+Les VIF sont < 5 pour la plupart et les 2 > 5 sont < 10, ils sont donc faibles. Il n'y a pas de colinearite entre les variables.
+
+Calcul de la deviance du modele reg1_prob,la sortie indique :
+
+- Null deviance: 1253.0  on 903    degrees of freedom
+- Residual deviance:  1029.4  on 896  degrees of freedom
+
+```{r}
+# Le test par rapport au modèle sans covariable donne
+pchisq(with(reg1_prob, null.deviance - deviance), with(reg1_prob, df.null - df.residual), lower = F)
+```
+
+=> p-valeur tres faible : on rejette le modele sans covariable
+
+```{r}
+# Le test par rapport au modèle sature donne
+pchisq(with(reg1_prob, deviance), with(reg1_prob, df.residual), lower = F)
+```
+=> p-valeur est faible : notre modele ne suffit pas a expliquer toutes les variations. Il est mal ajuste. Il est trop parcimonieux, il manque des variables explicatives.
+
+Cette methode de construction de modele n'est pas satisfaisante. Dans la suite, nous allons tester des methodes de choix plus industrielle, afin d'automatiser le processus de choix de modele : la methode exhaustive et les procedures pas a pas.
+
+## La methode exhaustive
+
+```{r}
+#install.packages("glmulti")
+#install.packages('rJava')
+#library(glmulti)
+
+#model_choice_Exh = glmulti(pluie.demain ~ 1,data = t_meteo[train,],level = 1,method = "h",fitfunction = glm,crit = 'aic',plotty = F)
+```
+
+Je n'ai malheureusement pas pu tester cette methode a cause d'un probleme technique
+
+## Modele LOGIT avec la methode pas a pas
+
+### Methode pas a pas avec le critere d'information d'Akaike, (en anglais Akaike information criterion ou AIC)
+
+```{r}
+library(MASS)
+```
+1- Procedure descendante
+
+```{r cache=TRUE}
+
+m1_log_aic = stepAIC(reg_log,trace = 1,direction = "backward")
+summary(m1_log_aic)
+
+```
+
+
+Calul des VIF
+
+```{r}
+vif(m1_log_aic)
+```
+
+Les VIF sont > 5 voir tres > 5, ils sont eleves. Il y a, donc, de la colinearite entre les variables.
+
+Calcul de la deviance du modele m1_log_aic,la sortie indique :
+
+- Null deviance: 1287.2  on 928   degrees of freedom
+- Residual deviance:  1027.1  on 914  degrees of freedom
+
+```{r}
+# Le test par rapport au modèle sans covariable donne
+pchisq(with(m1_log_aic, null.deviance - deviance), with(m1_log_aic, df.null - df.residual), lower = F)
+```
+
+=> p-valeur tres faible : on rejette le modele sans covariable
+
+```{r}
+# Le test par rapport au modèle sature donne
+
+pchisq(with(m1_log_aic, deviance), with(m1_log_aic, df.residual), lower = F)
+#pchisq(1029.8, 917, lower = F)
+```
+=> p-valeur est faible : notre modele ne suffit pas a expliquer toutes les variations. Il est mal ajuste. Il est trop parcimonieux, il manque des variables explicatives.
+
+
+2- Procedure ascendante
+
+```{r cache=TRUE}
+reg0 = glm(pluie.demain ~ 1,data = t_meteo[train,],family = binomial(logit))
+m2_log_aic = stepAIC(reg0,scope=list(upper=reg_log),direction = "forward")
+summary(m2_log_aic)
+
+```
+Calul des VIF
+
+```{r}
+vif(m2_log_aic)
+```
+
+Les VIF sont > 5. Ils sont un eleves, mais pas suffisamment pour que cela pose un problème de colinearite sauf une variable, Snowfall.amount.raw.daily.sum..sfc., tres > 10.
+
+Calcul de la deviance du modele m2_log_aic,la sortie indique :
+
+- Null deviance: 1287.2  on 928   degrees of freedom
+- Residual deviance:  1046.6  on 923  degrees of freedom
+
+```{r}
+# Le test par rapport au modèle sans covariable donne
+pchisq(with(m2_log_aic, null.deviance - deviance), with(m2_log_aic, df.null - df.residual), lower = F)
+```
+
+=> p-valeur tres faible : on rejette le modele sans covariable
+
+```{r}
+# Le test par rapport au modèle sature donne
+
+pchisq(with(m2_log_aic, deviance), with(m2_log_aic, df.residual), lower = F)
+#pchisq(1029.8, 917, lower = F)
+```
+=> p-valeur est faible : notre modele ne suffit pas a expliquer toutes les variations. Il est mal ajuste. Il est trop parcimonieux, il manque des variables explicatives.
+
+
+3- Procedure Stepwise
+
+```{r cache=TRUE}
+m3_log_aic = stepAIC(reg_log,scope=list(lower=reg0,upper=reg_log),direction = "both")
+summary(m3_log_aic)
+
+```
+
+Calul des VIF
+
+```{r}
+vif(m3_log_aic)
+```
+
+Les VIF sont > 5 a tres > 5, voir tres > 10. Il semble qu'il y ait de la colinearite entre les variables.
+
+Calcul de la deviance du modele m3_log_aic,la sortie indique :
+
+- Null deviance: 1287.2  on 928   degrees of freedom
+- Residual deviance:  1027.1  on 914  degrees of freedom
+
+```{r}
+# Le test par rapport au modèle sans covariable donne
+pchisq(with(m3_log_aic, null.deviance - deviance), with(m3_log_aic, df.null - df.residual), lower = F)
+```
+
+=> p-valeur tres faible : on rejette le modele sans covariable
+
+```{r}
+# Le test par rapport au modèle sature donne
+
+pchisq(with(m3_log_aic, deviance), with(m3_log_aic, df.residual), lower = F)
+
+```
+=> p-valeur est faible : notre modele ne suffit pas a expliquer toutes les variations. Il est mal ajuste. Il est trop parcimonieux, il manque des variables explicatives.
+
+### Methode pas a pas avec le critere d'information bayesien (en anglais bayesian information criterion ou BIC)
+
+1- Procedure descendante
+```{r cache=TRUE}
+
+m1_log_bic = stepAIC(reg_log,trace = 1,direction = "backward",k = log(nrow(t_meteo[train,])))
+summary(m1_log_bic)
+
+```
+
+Calul des VIF
+
+```{r}
+vif(m1_log_bic)
+```
+
+Les VIF sont > 5 et > 10 pour certains. Il y a certainement de la colinearite entre les variables.
+
+Calcul de la deviance du modele reg1_prob,la sortie indique :
+
+- Null deviance: 1287.2  on 928   degrees of freedom
+- Residual deviance:  1046.6  on 923  degrees of freedom
+
+```{r}
+# Le test par rapport au modèle sans covariable donne
+pchisq(with(m1_log_bic, null.deviance - deviance), with(m1_log_bic, df.null - df.residual), lower = F)
+```
+
+=> p-valeur tres faible : on rejette le modele sans covariable
+
+```{r}
+# Le test par rapport au modèle sature donne
+
+pchisq(with(m1_log_bic, deviance), with(m1_log_bic, df.residual), lower = F)
+#pchisq(1029.8, 917, lower = F)
+```
+=> p-valeur est faible : notre modele ne suffit pas a expliquer toutes les variations. Il est mal ajuste. Il est trop parcimonieux, il manque des variables explicatives.
+
+
+2- Procedure ascendante
+
+```{r cache=TRUE}
+reg0 = glm(pluie.demain ~ 1,data = t_meteo[train,],family = binomial(logit))
+m2_log_bic = stepAIC(reg0,scope=list(lower=reg0, upper=reg_log),direction = "forward",k = log(nrow(t_meteo[train,])))
+summary(m2_log_bic)
+
+```
+Calul des VIF
+
+```{r}
+vif(m2_log_bic)
+```
+
+Les VIF sont > 5, mais < 10. Ils sont un peu eleves, mais pas suffisamment pour que cela pose un problème de colinearite.
+
+Calcul de la deviance du modele m2_log_aic,la sortie indique :
+
+- Null deviance: 1287.2  on 928   degrees of freedom
+- Residual deviance:  1050.1  on 924  degrees of freedom
+
+```{r}
+# Le test par rapport au modèle sans covariable donne
+pchisq(with(m2_log_bic, null.deviance - deviance), with(m2_log_bic, df.null - df.residual), lower = F)
+```
+
+=> p-valeur tres faible : on rejette le modele sans covariable
+
+```{r}
+# Le test par rapport au modèle sature donne
+
+pchisq(with(m2_log_bic, deviance), with(m2_log_bic, df.residual), lower = F)
+
+```
+=> p-valeur est faible : le modele ne suffit pas a expliquer toutes les variations. Il est mal ajuste. Il est trop parcimonieux, il manque des variables explicatives.
+
+3- Procedure Stepwise
+
+la procedure stepwise donne des resultats similaires
+Il semble que la procedure de selection des variables explicatives basees sur les correlations utilisee plus haut pour eliminer des variables et rendre la selection plus simple, ne soit pas efficace.
+Nous allons tester une autre approche en appliquant la methode pas a pas a l'ensemble des variables explicatives.
+
+## Construction du modele a partir de l'ensemble des variables
+
+
+### Modele LOGIT avec la methode pas a pas
+
+1. Methode pas a pas avec le critere d'information d'Akaike (en anglais Akaike information criterion ou AIC) et la procedure de choix de variables stepwise
+
+
+```{r cache=TRUE}
+
+reg_log_all = glm(pluie.demain ~ ., 
+           data = tr_meteo[train,], family = binomial(logit))
+summary(reg_log_all)
+
+reg_log_0=glm(pluie.demain ~ 1,data = tr_meteo[train,],family = binomial(logit))
+
+m1_log_aic_all = stepAIC(reg_log_all,scope = list(lower = reg_log_0,upper=reg_log_all),trace=TRUE,direction = "both")
+summary(m1_log_aic_all)
+```
+
+2. Methode pas a pas avec le critere d'information Bayesien (en anglais Bayesian information criterion ou BIC) et la procedure de choix de variables stepwise
+
+
+```{r cache=TRUE}
+
+m1_log_bic_all = stepAIC(reg_log_all,scope = list(lower = reg_log_0,upper=reg_log_all),trace=TRUE,direction = "both",k = log(nrow(tr_meteo[train,])))
+summary(m1_log_bic_all)
+```
+
+
+### Modele PROBIT avec la methode pas a pas
+
+1. Methode pas a pas avec le critere d'information d'Akaike (en anglais Akaike information criterion ou AIC) et la procedure de choix de variables Stepwise
+
+```{r cache=TRUE}
+
+reg_prob_all = glm(pluie.demain ~ ., 
+           data = tr_meteo[train,], family = binomial(link = "probit"))
+summary(reg_prob_all)
+
+reg_prob_0=glm(pluie.demain ~ 1,data = tr_meteo[train,],family = binomial(link = "probit"))
+
+m1_prob_aic_all = stepAIC(reg_prob_all,scope = list(lower = reg_prob_0,upper=reg_prob_all),trace=TRUE,direction = "both")
+summary(m1_prob_aic_all)
+```
+
+2. Methode pas a pas avec le critere d'information Bayesien (en anglais Bayesian information criterion ou BIC) et la procedure de choix de variables stepwise
+
+
+```{r cache=TRUE}
+
+m1_prob_bic_all = stepAIC(reg_prob_all,scope = list(lower = reg_prob_0,upper=reg_prob_all),trace=TRUE,direction = "both",k = log(nrow(tr_meteo[train,])))
+summary(m1_prob_bic_all)
+```
+
+
+# Etape 5 - Validation croisee 
+
+## On effectue une prediction, uniquement sur la base de test
+
+```{r}
+pred_log_aic = predict(m1_log_aic_all, tr_meteo[!train, ], type = "response")
+pred_log_bic = predict(m1_log_bic_all, tr_meteo[!train, ], type = "response")
+pred_prob_aic = predict(m1_prob_aic_all, tr_meteo[!train, ], type = "response")
+pred_prob_bic = predict(m1_prob_bic_all, tr_meteo[!train, ], type = "response")
+
+```
+
+## Evaluation de l'erreur de prediction et choix entre les modeles
+
+```{r}
+pluie.demain.bin=tr_meteo[,"pluie.demain"]
+pluie.demain.bin[pluie.demain.bin==TRUE]=1
+pluie.demain.bin[pluie.demain.bin==FALSE]=0
+tr_meteo = cbind(tr_meteo,pluie.demain.bin)
+
+mean(abs(pred_log_aic - tr_meteo[!train, "pluie.demain.bin"]), na.rm = T)
+mean(abs(pred_log_bic - tr_meteo[!train, "pluie.demain.bin"]), na.rm = T)
+mean(abs(pred_prob_aic - tr_meteo[!train, "pluie.demain.bin"]), na.rm = T)
+mean(abs(pred_prob_bic - tr_meteo[!train, "pluie.demain.bin"]), na.rm = T)
+
+```
+
+On choisit le modele dont l'erreur de prediction est la plus faible soit, le modele m1_log_aic_all.
+
+# Etape 6 - Validation du modele
+
+## Analyse des residus
+
+Apres avoir obtenu un modele, il faut diagnostiquer la regression afin de valider ou non le modele.
+Il est important de noter qu'en regression logistique, on s'interesse la plupart du temps aux residus de deviance. Ils prennent generalement les valeurs qui oscillent entre -2 et 2. On construit un index plot pour detecter les valeurs aberrantes (en dehors des lignes)
+
+```{r fig.align="center", fig.height=6, fig.width=6}
+par(mfrow = c(1, 1))
+plot(rstudent(m1_log_aic_all), type = "p", cex = 0.5, ylab = "Residus studentises ", 
+    col = "springgreen2", ylim = c(-3, 3))
+abline(h = c(-2, 2), col = "red")
+
+```
+
+On observe une dizaine de points à l'exterieur des lignes -2 et 2. La grande majorite du nuage de points est bien confine à l'interieur du canal forme par les 2 lignes rouges.
+
+## Test de deviance
+
+```{r}
+#Le test par rapport au modele sans covariable donne
+chi2 = with(m1_log_aic_all, null.deviance - deviance)
+ddl = with(m1_log_aic_all, df.null - df.residual)
+pvalue.null = pchisq(chi2, ddl, lower.tail = F)
+pvalue.null
+
+```
+
+=> p-valeur tres faible : on rejette le modele sans covariable
+
+
+```{r}
+#Le test par rapport au modele sature donne
+
+pvalue.sat = pchisq(with(m1_log_aic_all, deviance), with(m1_log_aic_all, df.residual), lower.tail = F)
+pvalue.sat
+
+```
+
+=> p-valeur encore faible, ce qui pourrait sembler indiquer un probleme d'ajustement du modele. Peut-etre devrait on integrer des liens entre les variables ou d'autres types de courbes (cosinus, polynomes...)?
+
+## Construction de la matrice de confusion et de la courbe ROC (receiver operating characteristic) sur les donnees d'entrainement et de test
+
+Cette courbe, ou plutot l'aire sous elle, represente la sensibilite/specifite du modele. Un modele est bon si les positifs (les 1) ont ete predit positifs et les 0 ont ete prevus 0.
+Generalement, on s'interesse a la fois a la forme de la courbe et a l'aire sous elle : 1-> Modele ideal, 0.5 -> Modele aleatoire;
+
+Principe de la courbe ROC : si le test donne un resultat numerique avec un seuil t tel que la prediction est positive si x > t, et la prediction est negative si x < t, alors au fur et a mesure que t augmente :
+
+-    la specificite augmente.
+-    mais la sensibilite diminue.
+
+La courbe ROC represente l'evolution de la sensibilite (taux de vrais positifs) en fonction de 1 - specificite (taux de faux positifs) quand on fait varier le seuil t.
+
+C'est une courbe croissante entre le point (0,0) et le point (1, 1) et en principe au-dessus de la première bissectrice.Une prediction random donnerait la première bissectrice. Meilleure est la prediction, plus la courbe est au-dessus la première bissectrice. Une prediction ideale est l'horizontale y=1 sur ]0,1] et le point (0,0). L'aire sous la courbe ROC (AUC, Area Under the Curve) donne un indicateur de la qualite de la prediction (1 pour une prediction ideale, 0.5 pour une prediction random). 
+
+
+```{r fig.align="center", fig.height=6, fig.width=7}
+
+require(ROCR)
+
+
+pred.pluie=pred_log_aic
+test.p=tr_meteo[!train,]
+test.p = cbind(test.p,pred.pluie)
+test.p = cbind(test.p, pred.pluie.bin = factor(ifelse(test.p$pred.pluie > 0.5, 1, 0)))
+
+# Matrice de confusion du jeux de donnees de test
+
+m.confusiontest = as.matrix(table(test.p$pluie.demain.bin, test.p$pred.pluie.bin))
+m.confusiontest
+
+# Courbe ROC sur les donnees de tests
+
+Pred.test = prediction(test.p$pred.pluie, test.p$pluie.demain.bin)
+Perf.test = performance(Pred.test, "tpr", "fpr")
+perf.test=performance(Pred.test,"auc")
+perf.test@y.values[[1]]
+plot(Perf.test, colorize = TRUE, main = "ROC test")
+
+
+# Matrice de confusion du jeux de donnees de test
+
+train.p=tr_meteo[train,]
+train.p = cbind(train.p, pred.pluie.train=predict(m1_log_aic_all, train.p, type = "response"))
+train.p = cbind(train.p, pred.pluie.train.bin = factor(ifelse(train.p$pred.pluie.train > 0.5, 1, 0)))
+#
+m.confusiontrain = as.matrix(table(train.p$pluie.demain.bin, train.p$pred.pluie.train.bin))
+m.confusiontrain
+
+# Courbe ROC sur les donnees d'entrainement
+
+Pred.train = prediction(train.p$pred.pluie.train, train.p$pluie.demain.bin)
+Perf.train = performance(Pred.train, "tpr", "fpr")
+perf.train=performance(Pred.train,"auc")
+perf.train@y.values[[1]]
+plot(Perf.train, colorize = TRUE, main = "ROC apprentissage")
+
+# Affichage des deux courbes ROC cote a cote
+
+par(mfrow = c(1, 2))
+plot(Perf.train, colorize = TRUE, main = "ROC apprentissage")
+plot(Perf.test, colorize = TRUE, main = "ROC Test ")
+
+```
+
+Le modele semble performant. En effet, le taux d'erreur de prediction ((taux de faux positif + taux de faux negatifs)/(taux de vraix positifs + taux de vraix negatifs)) sur les donnees d'entrainement et de test est relativement faible (respectivement 42% et 37%) d'après les matrices de confusions. 
+De plus, les courbes ROC sont tres au dessus de la bissectrice entre 0 et 1.
+L'air au dessus de la bissectrice de chacune de ces courbes (calcule par l'AUC) est proche de 0,8 ce qui semble indiquer que le modele est de bonne qualite.
+
+
+# Etape 7 - Prediction sur le jeu de test
+
+```{r cache=TRUE}
+test_meteo = read.csv("meteo.test.csv", na.strings = "")
+
+prediction_final = predict(m1_log_aic_all,test_meteo,type = "response")
+pred_Final=prediction_final
+pred_Final[pred_Final>0.5]=1 
+pred_Final[pred_Final<=0.5]=0
+
+```
+
+# Etape 8 - Generation du fichier csv des predictions
+
+
+```{r cache=TRUE}
+test_meteo_output = cbind.data.frame(test_meteo,prediction_final,pred_Final)
+head(test_meteo_output)
+write.csv2(test_meteo_output,file = "fichier_preditctions_meteo.csv",dec=".",col.names = T)
+
+```
